@@ -17,9 +17,11 @@ public class PstScan {
         String modeStr = args[0].trim();
         if ("1".equals(modeStr)) {
             String subjectFile = args.length > 1 ? args[1] : "subjects.txt";
-            runMode1(subjectFile);
+            String pstRoot = args.length > 2 ? args[2] : ".";
+            runMode1(subjectFile, pstRoot);
         } else if ("2".equals(modeStr)) {
-            runMode2();
+            String pstRoot = args.length > 1 ? args[1] : ".";
+            runMode2(pstRoot);
         } else {
             System.err.println("Invalid mode. Use 1 or 2.");
             printUsage();
@@ -28,22 +30,25 @@ public class PstScan {
     }
 
     private static void printUsage() {
-        System.err.println("Usage: PstScan <1|2> [subjects-file]");
+        System.err.println("Usage: PstScan <1|2> [subjects-file] [pst-root-dir]");
         System.err.println("  1 = Find PST containing email with subject from list (default list: subjects.txt)");
         System.err.println("  2 = Find first email with sender name but no sender email; print details and PST name");
-        System.err.println("Run from the folder that contains .pst files (searches current dir and all subfolders).");
+        System.err.println("  pst-root-dir = folder to search for .pst files (and subfolders); default: current directory");
     }
 
-    private static void runMode1(String subjectFile) {
+    private static void runMode1(String subjectFile, String pstRootPath) {
         List<String> subjects = loadSubjects(subjectFile);
         if (subjects.isEmpty()) {
             System.err.println("No subjects loaded from " + subjectFile + ". Put one subject (or substring) per line.");
             System.exit(1);
         }
-        File cwd = new File(".").getAbsoluteFile();
-        List<File> pstFiles = collectPstFiles(cwd, new ArrayList<File>());
+        File pstRoot = resolvePstRoot(pstRootPath);
+        if (pstRoot == null) {
+            System.exit(1);
+        }
+        List<File> pstFiles = collectPstFiles(pstRoot, new ArrayList<File>());
         if (pstFiles.isEmpty()) {
-            System.err.println("No .pst files found in " + cwd + " or subfolders.");
+            System.err.println("No .pst files found in " + pstRoot.getAbsolutePath() + " or subfolders.");
             System.exit(1);
         }
         System.err.println("Loaded " + subjects.size() + " subject(s). Scanning " + pstFiles.size() + " PST file(s)...");
@@ -63,11 +68,14 @@ public class PstScan {
         System.out.println("No PST contained an email matching the subject list.");
     }
 
-    private static void runMode2() {
-        File cwd = new File(".").getAbsoluteFile();
-        List<File> pstFiles = collectPstFiles(cwd, new ArrayList<File>());
+    private static void runMode2(String pstRootPath) {
+        File pstRoot = resolvePstRoot(pstRootPath);
+        if (pstRoot == null) {
+            System.exit(1);
+        }
+        List<File> pstFiles = collectPstFiles(pstRoot, new ArrayList<File>());
         if (pstFiles.isEmpty()) {
-            System.err.println("No .pst files found in " + cwd + " or subfolders.");
+            System.err.println("No .pst files found in " + pstRoot.getAbsolutePath() + " or subfolders.");
             System.exit(1);
         }
         System.err.println("Scanning " + pstFiles.size() + " PST file(s) for first email with sender name but no email...");
@@ -117,6 +125,20 @@ public class PstScan {
             }
         }
         return list;
+    }
+
+    /** Returns the resolved, absolute directory to search for PSTs, or null if invalid (and prints error). */
+    private static File resolvePstRoot(String pstRootPath) {
+        File dir = new File(pstRootPath).getAbsoluteFile();
+        if (!dir.exists()) {
+            System.err.println("PST root directory does not exist: " + dir.getAbsolutePath());
+            return null;
+        }
+        if (!dir.isDirectory()) {
+            System.err.println("PST root is not a directory: " + dir.getAbsolutePath());
+            return null;
+        }
+        return dir;
     }
 
     private static List<File> collectPstFiles(File dir, List<File> out) {
