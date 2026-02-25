@@ -8,7 +8,23 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+/**
+ * Scan PST files.
+ * Modes:
+ *   1 = Find PST containing an email whose subject matches any in a list (from file).
+ *   2 = Find first email that has sender name but no sender email address; print its details and PST name.
+ *   3 = For a given PST and subject, print all details we can read for every matching email.
+ *
+ * Java 8 compatible.
+ *
+ * Mode 1:  java ... PstScan 1 [subjects-file] [pst-root-dir]
+ *          Default subjects file: subjects.txt. Default dir: current directory.
+ * Mode 2:  java ... PstScan 2 [pst-root-dir]
+ *          Default dir: current directory.
+ * Mode 3:  java ... PstScan 3 \"Subject text\" /path/to/file.pst
+ */
 public class PstScan {
+
     public static void main(String[] args) {
         if (args.length < 1) {
             printUsage();
@@ -22,18 +38,29 @@ public class PstScan {
         } else if ("2".equals(modeStr)) {
             String pstRoot = args.length > 1 ? args[1] : ".";
             runMode2(pstRoot);
+        } else if ("3".equals(modeStr)) {
+            if (args.length < 3) {
+                System.err.println("Mode 3 requires a subject string and a PST path.");
+                printUsage();
+                System.exit(1);
+            }
+            String subject = args[1];
+            String pstPath = args[2];
+            runMode3(subject, pstPath);
         } else {
-            System.err.println("Invalid mode. Use 1 or 2.");
+            System.err.println("Invalid mode. Use 1, 2, or 3.");
             printUsage();
             System.exit(1);
         }
     }
 
     private static void printUsage() {
-        System.err.println("Usage: PstScan <1|2> [subjects-file] [pst-root-dir]");
+        System.err.println("Usage: PstScan <1|2|3> [subjects-file] [pst-root-dir]");
         System.err.println("  1 = Find PST containing email with subject from list (default list: subjects.txt)");
         System.err.println("  2 = Find first email with sender name but no sender email; print details and PST name");
         System.err.println("  pst-root-dir = folder to search for .pst files (and subfolders); default: current directory");
+        System.err.println("  3 = For a given PST and subject, print all details for matching emails");
+        System.err.println("      Example: PstScan 3 \"FW: Duke Longboat Certs\" /path/to/file.pst");
     }
 
     private static void runMode1(String subjectFile, String pstRootPath) {
@@ -98,6 +125,28 @@ public class PstScan {
         System.out.println("No email found with sender name only (no sender email).");
     }
 
+    private static void runMode3(String subjectQuery, String pstPath) {
+        File pstFile = new File(pstPath).getAbsoluteFile();
+        if (!pstFile.isFile()) {
+            System.err.println("PST file not found: " + pstFile.getAbsolutePath());
+            System.exit(1);
+        }
+        System.err.println("Mode 3: scanning PST " + pstFile.getAbsolutePath());
+        System.err.println("Subject filter (case-insensitive, contains): " + subjectQuery);
+        try {
+            int count = dumpMessagesBySubject(pstFile.getAbsolutePath(), subjectQuery);
+            if (count == 0) {
+                System.out.println("No messages found with subject matching: " + subjectQuery);
+            } else {
+                System.out.println("Total messages printed: " + count);
+            }
+        } catch (Exception e) {
+            System.err.println("Error in mode 3: " + e.getMessage());
+            e.printStackTrace(System.err);
+            System.exit(1);
+        }
+    }
+
     private static List<String> loadSubjects(String path) {
         List<String> list = new ArrayList<String>();
         File f = new File(path);
@@ -154,6 +203,139 @@ public class PstScan {
             }
         }
         return out;
+    }
+
+    private static int dumpMessagesBySubject(String pstPath, String subjectQuery) throws IOException, PSTException {
+        PSTFile pstFile = null;
+        try {
+            pstFile = new PSTFile(pstPath);
+            PSTFolder root = pstFile.getRootFolder();
+            String normalized = subjectQuery.toLowerCase(Locale.US);
+            int[] counter = new int[1];
+            dumpFolderBySubject(root, "", normalized, counter);
+            return counter[0];
+        } finally {
+            if (pstFile != null) {
+                try {
+                    pstFile.close();
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+
+    private static void dumpFolderBySubject(PSTFolder folder, String parentPath, String subjectQueryLower, int[] counter)
+            throws PSTException, IOException {
+        String currentPath = parentPath.isEmpty()
+                ? folder.getDisplayName()
+                : parentPath + "/" + folder.getDisplayName();
+
+        PSTObject child = folder.getNextChild();
+        while (child != null) {
+            if (child instanceof PSTMessage) {
+                PSTMessage msg = (PSTMessage) child;
+                String subj = null;
+                try {
+                    subj = msg.getSubject();
+                } catch (Exception ignored) {
+                }
+                if (subj != null && subj.toLowerCase(Locale.US).contains(subjectQueryLower)) {
+                    counter[0]++;
+                    printFullMessageInfo(counter[0], currentPath, msg);
+                }
+            }
+            child = folder.getNextChild();
+        }
+
+        for (PSTFolder sub : folder.getSubFolders()) {
+            dumpFolderBySubject(sub, currentPath, subjectQueryLower, counter);
+        }
+    }
+
+    private static void printFullMessageInfo(int index, String folderPath, PSTMessage msg) {
+        System.out.println("========== MESSAGE " + index + " ==========");
+        System.out.println("FOLDER_PATH=" + nullToEmpty(folderPath));
+        try {
+            System.out.println("SUBJECT=" + nullToEmpty(msg.getSubject()));
+        } catch (Exception e) {
+            System.out.println("SUBJECT=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("SENDER_NAME=" + nullToEmpty(msg.getSenderName()));
+        } catch (Exception e) {
+            System.out.println("SENDER_NAME=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("SENDER_EMAIL=" + nullToEmpty(msg.getSenderEmailAddress()));
+        } catch (Exception e) {
+            System.out.println("SENDER_EMAIL=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("DISPLAY_TO=" + nullToEmpty(msg.getDisplayTo()));
+        } catch (Exception e) {
+            System.out.println("DISPLAY_TO=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("DISPLAY_CC=" + nullToEmpty(msg.getDisplayCC()));
+        } catch (Exception e) {
+            System.out.println("DISPLAY_CC=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("DISPLAY_BCC=" + nullToEmpty(msg.getDisplayBCC()));
+        } catch (Exception e) {
+            System.out.println("DISPLAY_BCC=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("DELIVERY_TIME=" + (msg.getMessageDeliveryTime() != null
+                    ? msg.getMessageDeliveryTime().toString()
+                    : ""));
+        } catch (Exception e) {
+            System.out.println("DELIVERY_TIME=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("CLIENT_SUBMIT_TIME=" + (msg.getClientSubmitTime() != null
+                    ? msg.getClientSubmitTime().toString()
+                    : ""));
+        } catch (Exception e) {
+            System.out.println("CLIENT_SUBMIT_TIME=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("INTERNET_MESSAGE_ID=" + nullToEmpty(msg.getInternetMessageId()));
+        } catch (Exception e) {
+            System.out.println("INTERNET_MESSAGE_ID=<error: " + e.getMessage() + ">");
+        }
+        try {
+            System.out.println("TRANSPORT_HEADERS_START");
+            String headers = msg.getTransportMessageHeaders();
+            if (headers != null) {
+                for (String line : headers.split("\\r?\\n")) {
+                    System.out.println("  " + line);
+                }
+            }
+            System.out.println("TRANSPORT_HEADERS_END");
+        } catch (Exception e) {
+            System.out.println("TRANSPORT_HEADERS_ERROR=" + e.getMessage());
+        }
+        try {
+            String body = msg.getBody();
+            if (body != null && !body.isEmpty()) {
+                System.out.println("BODY_TEXT_START");
+                System.out.println(body);
+                System.out.println("BODY_TEXT_END");
+            }
+        } catch (Exception e) {
+            System.out.println("BODY_TEXT_ERROR=" + e.getMessage());
+        }
+        try {
+            String bodyHtml = msg.getBodyHTML();
+            if (bodyHtml != null && !bodyHtml.isEmpty()) {
+                System.out.println("BODY_HTML_START");
+                System.out.println(bodyHtml);
+                System.out.println("BODY_HTML_END");
+            }
+        } catch (Exception e) {
+            System.out.println("BODY_HTML_ERROR=" + e.getMessage());
+        }
     }
 
     private static String findFirstMatchingSubject(String pstPath, List<String> subjects) throws IOException, PSTException {
